@@ -35,7 +35,7 @@ int StepsRequired;
 // Pins entered in sequence 1-3-2-4 for proper step sequencing
 
 // Stepper steppermotor(STEPS_PER_REV, 8, 10, 9, 11);
-const int stepDelay = 1000;
+const int stepDelay = 4000;
 Unistep2 stepper(8, 9, 10, 11, 4096, stepDelay);
 void setup()
 {

@@ -12,6 +12,9 @@
 #include <SPI.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
+// Include the Arduino Stepper Library
+// #include <Stepper.h>
+#include <Unistep2.h>
 
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 64 // OLED display height, in pixels
@@ -22,27 +25,34 @@
 
 #define OLED_RESET -1       // Reset pin # (or -1 if sharing Arduino reset pin)
 #define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
-#define mosfetPwmPin 11
-#define pwmFrequency 25000
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+#define mosfetPwmPin 44
 
-/*
- * The setup function. We only start the sensors here
- */
-const int buttonUpPin = 2; // Pin number for the button to increase PWM
-const int buttonDownPin = 3;
+#define buttonUpPin 2 // Pin number for the button to
+#define buttonDownPin 3
+#define interruptPin 15
+#define fanPin 5 // PWM pin for
 
-const int fanPin = 5;                // PWM pin for controlling the fan
-const int interruptPin = 15;         // Digital pin for the RPM interrupt
-volatile unsigned long rpmCount = 0; // Variable to store the RPM count
+const int stepDelay = 1800;
+const float pwmFrequency = 266.00 * 100;
+volatile unsigned long rpmCount = 0; // Variable to store the
 unsigned long lastRpmCalculationTime = 0;
-// the following variables are unsigned longs because the time, measured in
-// milliseconds, will quickly become a bigger number than can be stored in an int.
-unsigned long lastDebounceTime = 0; // the last time the output pin was toggled
-unsigned long debounceDelay = 50;   // the debounce time; increase if the output flickers
-int lastButtonState = LOW;          // the previous reading from the input pin
+unsigned long lastDebounceTime = 0; // the last time the
+unsigned long debounceDelay = 70;   // the debounce time; increase if the output flickers
+int lastButtonState = LOW;          // the previous reading
 int buttonState = LOW;
 int pwmRate = 0;
+char dashLine[] = "=====================================================================================";
+boolean psuOn = false;
+boolean tempThreasReached = false;
+auto timer = timer_create_default();
+bool timerSet = false;
+int tempThesh = 3;
+
+// Devices
+SHT31 sht;
+AVR_PWM *PWM_Instance;
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+Unistep2 stepper(8, 9, 10, 11, 4096, stepDelay);
 
 void rpmInterrupt()
 {
@@ -62,13 +72,32 @@ void setup_display()
     // Show initial display buffer contents on the screen --
     // the library initializes this with an Adafruit splash screen.
     display.display();
+    // display.setRotation(2);
 
     display.setTextSize(2);
     Serial.println("Display Inited");
     display.setTextColor(WHITE);
 }
-AVR_PWM *PWM_Instance;
+void setupSht()
+{
+    Wire.begin(0x44);
+    sht.begin(); // Sensor I2C Address
+    Serial.println("sht Inited");
+}
 
+void printPWMInfo(AVR_PWM *PWM_Instance)
+{
+    Serial.println(dashLine);
+    Serial.print("Actual data: pin = ");
+    Serial.print(PWM_Instance->getPin());
+    Serial.print(", PWM DC = ");
+    Serial.print(PWM_Instance->getActualDutyCycle());
+    Serial.print(", PWMPeriod = ");
+    Serial.print(PWM_Instance->getPWMPeriod());
+    Serial.print(", PWM Freq (Hz) = ");
+    Serial.println(PWM_Instance->getActualFreq(), 4);
+    Serial.println(dashLine);
+}
 void setup()
 {
     Serial.begin(115200); // Initialize serial communication
@@ -99,11 +128,11 @@ void upPwm()
         lastDebounceTime = millis();
     }
 
-    Serial.println(reading);
-    Serial.print("last debounce time: ");
-    Serial.println(lastDebounceTime);
-    Serial.print("passedsince: ");
-    Serial.println(millis() - lastDebounceTime);
+    // Serial.println(reading);
+    // Serial.print("last debounce time: ");
+    // Serial.println(lastDebounceTime);
+    // Serial.print("passedsince: ");
+    // Serial.println(millis() - lastDebounceTime);
     if ((millis() - lastDebounceTime) > debounceDelay)
     {
         // whatever the reading is at, it's been there for longer
@@ -141,11 +170,11 @@ void downPwm()
         downLast = millis();
     }
 
-    Serial.println(reading);
-    Serial.print("last debounce time: ");
-    Serial.println(downLast);
-    Serial.print("passedsince: ");
-    Serial.println(millis() - downLast);
+    // Serial.println(reading);
+    // Serial.print("last debounce time: ");
+    // Serial.println(downLast);
+    // Serial.print("passedsince: ");
+    // Serial.println(millis() - downLast);
     if ((millis() - downLast) > debounceDelay)
     {
         // whatever the reading is at, it's been there for longer
@@ -166,20 +195,63 @@ void downPwm()
     // it'll be the lastButtonState:
     lastBtnState = reading;
 }
+unsigned long lastTempCheck = 0;
+float hum = 0.0;
+
+float tempC = 0.0;
+void checkTemp()
+{
+    if (millis() - lastTempCheck <= 1000)
+    {
+        return;
+    }
+    sht.read();
+    hum = sht.getHumidity();
+
+    tempC = sht.getTemperature();
+    lastTempCheck = millis();
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    display.print(tempC);
+    display.println(" C");
+    display.print(hum);
+    display.println(" %");
+    display.print("Set ");
+    display.println(pwmRate);
+    display.display();
+}
 void loop()
 {
+    stepper.run();
     int oldPwmRate = pwmRate;
     upPwm();
     downPwm();
-    display.clearDisplay();
-    display.setCursor(0, 20);
-    display.println(pwmRate);
-    display.display();
+
+    checkTemp();
+
     if (oldPwmRate != pwmRate)
     {
-        PWM_Instance->setPWM(mosfetPwmPin, pwmFrequency, pwmRate);
+        PWM_Instance->setPWM(mosfetPwmPin, pwmFrequency,
+                             float(pwmRate));
+
+        // if (pwmRate == 100)
+        // {
+        //     analogWrite(mosfetPwmPin, 255);
+        // }
+        Serial.println((pwmRate * 65536) / 100);
+        printPWMInfo(PWM_Instance);
     }
 
     // analogWrite(mosfetPwmPin, pwmRate);
     //  display.println(" C");
+
+    // // Slow - 4-step CW sequence to o.
+
+    if (stepper.stepsToGo() == 0)
+    {
+        // stepper.stop();
+
+        // delay(5000);
+        stepper.move(100000);
+    }
 }
